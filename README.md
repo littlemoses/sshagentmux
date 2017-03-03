@@ -4,7 +4,7 @@ SSH Agent Background
 OpenSSH includes ssh-agent, a program which holds private keys used for public
 key authentication. When a ssh client authenticates with a remote server and
 SSH_AUTH_SOCK is set, the client will connect to the agent's authentication
-socket and enumerate the identities loaded into the agent. It then offers these
+socket and list the identities loaded into the agent. It then offers these
 identities to the remote host and if there is a matching identity on the remote
 host (in ~/.ssh/authorized_keys) the remote host will reply with a challenge
 for that identity. The client then sends that challenge to the agent and the
@@ -40,7 +40,7 @@ ssh authentication socket connection. For enumeration requests, it connects to
 both the existing authentication socket and the authorization proxy, requests
 the list of identities from each socket, and returns the combined results. For
 signing requests, it forwards the request to the authentication socket which
-enumerated that identity. All other requests are forwarded the existing
+listed that identity. All other requests are forwarded the existing
 authentication socket. This allows the user to add and remove identities from
 their local agent.
 
@@ -58,7 +58,7 @@ with appropriate access.
 
 The authorization proxy can share much of its code with the agent multiplexer
 since it also needs to accept multiple concurrent ssh agent connections, modify
-enumerate identities responses and govern sign requests.
+list identities responses and govern sign requests.
 
 Authorization will be stored in a SQLite database:
 
