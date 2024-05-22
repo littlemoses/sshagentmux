@@ -15,7 +15,8 @@
 #    License for the specific language governing permissions and limitations
 
 import logging
-import Queue
+#import queue
+from queue import Queue
 import socket
 import struct
 import threading
@@ -31,7 +32,7 @@ class UpstreamSocketThread(threading.Thread):
         super(UpstreamSocketThread, self).__init__()
         self._socket_path = socket_path
         if queue is None:
-            queue = Queue.Queue()
+            queue = Queue()
         self._queue = queue
         self.daemon = True
         self._sock = None
@@ -45,7 +46,7 @@ class UpstreamSocketThread(threading.Thread):
         """
         Called my other thread submitting a request
         """
-        response_queue = Queue.Queue(1)
+        response_queue = Queue(1)
         request = (msg, response_queue)
         self._queue.put(request)
 
@@ -61,7 +62,7 @@ class UpstreamSocketThread(threading.Thread):
                 try:
                     self._sock.sendall(request_msg)
                     response_msg = self._recv_msg()
-                except socket.error, msg:
+                except socket.error as msg:
                     LOG.error("upstream agent error: %s", msg)
                     for chunk in self._hex_dump_chunks(request_msg):
                         LOG.warning("upstream agent request: %s" % chunk)

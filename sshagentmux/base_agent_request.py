@@ -18,44 +18,17 @@ import hashlib
 import pwd
 import re
 import socket
-import SocketServer
+import socketserver
 import struct
 import subprocess
 import sys
 
 
-class BaseAgentRequestHandler(SocketServer.BaseRequestHandler):
+class BaseAgentRequestHandler(socketserver.BaseRequestHandler):
     SSH2_AGENTC_REQUEST_IDENTITIES = 11
     SSH2_AGENT_IDENTITIES_ANSWER = 12
     SSH2_AGENTC_SIGN_REQUEST = 13
     PEERCRED_STRUCT = struct.Struct('= I I I')
-
-    def fetch_peer_info(self):
-        """
-        Collect user and process info of peer
-        """
-        if sys.platform == 'linux2':
-            SO_PEERCRED = 17
-
-            peercred = self.request.getsockopt(socket.SOL_SOCKET, SO_PEERCRED,
-                                               self.PEERCRED_STRUCT.size)
-
-            self.peer_pid, self.peer_uid, _ = \
-                self.PEERCRED_STRUCT.unpack(peercred)
-        elif sys.platform == 'openbsd5':
-            SO_PEERCRED = 4130
-
-            peercred = self.request.getsockopt(socket.SOL_SOCKET, SO_PEERCRED,
-                                               self.PEERCRED_STRUCT.size)
-
-            self.peer_uid, _, self.peer_pid = \
-                self.PEERCRED_STRUCT.unpack(peercred)
-        else:
-            raise RuntimeError("Unsupported platform {}.".format(
-                               sys.platform))
-
-        self._fetch_process_info()
-        self.username = pwd.getpwuid(self.peer_uid)[0]
 
     def handle(self):
         """
@@ -150,11 +123,11 @@ class BaseAgentRequestHandler(SocketServer.BaseRequestHandler):
 
             yield msg_buffer
 
-    def _fetch_process_info(self):
-        """
-        Retrieve the command line of the process
-        """
-        self.process_info = 'pid={}'.format(self.peer_pid)
-        ps_cmd = ['ps', '-o', 'args', '-ww', '-p', '{}'.format(self.peer_pid)]
-        ps_output = subprocess.check_output(ps_cmd)
-        self.process_info = ps_output.split('\n')[1]
+    #def _fetch_process_info(self):
+    #    """
+    #    Retrieve the command line of the process
+    #    """
+    #    self.process_info = 'pid={}'.format(self.peer_pid)
+    #    ps_cmd = ['ps', '-o', 'args', '-ww', '-p', '{}'.format(self.peer_pid)]
+    #    ps_output = subprocess.check_output(ps_cmd)
+    #    self.process_info = ps_output.split('\n')[1]

@@ -15,19 +15,20 @@
 #    License for the specific language governing permissions and limitations
 
 import argparse
-import logging
-import multiprocessing
 import os
-import SocketServer
+import socketserver
 import struct
 import sys
-import tempfile
+from functools import partial
 
-from sshagentmux.base_agent_request import BaseAgentRequestHandler
-from sshagentmux.upstream_socket_thread import UpstreamSocketThread
-from sshagentmux.util import daemonize, setup_logging
+from base_agent_request import BaseAgentRequestHandler
+from upstream_socket_thread import UpstreamSocketThread
+from daemonize import Daemonize
 
-LOG = logging.getLogger(__name__)
+# LOG = logging.getLogger(__name__)
+
+SOCK_PATH = '/tmp/ssh_auth_mux.sock'
+PID_FILE = '/tmp/sshagentmux.pid'
 
 
 class AgentMultiplexerRequestHandler(BaseAgentRequestHandler):
@@ -37,11 +38,6 @@ class AgentMultiplexerRequestHandler(BaseAgentRequestHandler):
 
     def setup(self):
         self._identity_map = {}
-        self.fetch_peer_info()
-        # Deny connections from other users
-        if self.peer_uid != os.getuid():
-            raise RuntimeError("Connection from uid {} denied.".format(
-                               self.peer_uid))
 
     def handle(self):
         """
@@ -59,17 +55,7 @@ class AgentMultiplexerRequestHandler(BaseAgentRequestHandler):
                 hex_blob = ''.join('{:02x}'.format(b) for b in key_blob)
 
                 agent = self._identity_map[hex_blob]
-
-                if agent:
-                    if agent == self.server.alternate_agent:
-                        key_digest = self._key_digest(key_blob)
-                        LOG.info("identity %s used by %s: %s", key_digest,
-                                 self.username, self.process_info)
-
-                    response = agent.forward_request(request)
-                else:
-                    response = \
-                        self.server.default_agent.forward_request(request)
+                response = agent.forward_request(request)
             else:
                 response = self.server.default_agent.forward_request(request)
 
@@ -87,11 +73,10 @@ class AgentMultiplexerRequestHandler(BaseAgentRequestHandler):
             for key_blob, key_comment in self._parse_identities(response):
                 # Record where each identity came from
                 hex_blob = ''.join('{:02x}'.format(b) for b in key_blob)
-                if hex_blob in self._identity_map and \
-                        self._identity_map[hex_blob] != agent:
-                    LOG.error("identity %s duplicated in %s and %s by %s",
-                              hex_blob, agent, self._identity_map[hex_blob],
-                              self.username)
+                # if hex_blob in self._identity_map and self._identity_map[hex_blob] != agent:
+                #     LOG.error("identity %s duplicated in %s and %s by %s",
+                #               hex_blob, agent, self._identity_map[hex_blob],
+                #               self.username)
 
                 self._identity_map[hex_blob] = agent
 
@@ -101,44 +86,51 @@ class AgentMultiplexerRequestHandler(BaseAgentRequestHandler):
         return self._build_identities_answer(identities)
 
 
-class AgentMultiplexer(SocketServer.ThreadingUnixStreamServer):
+class AgentMultiplexer(socketserver.ThreadingUnixStreamServer):
     timeout = 3
 
-    def __init__(self, listening_sock, default_agent_sock,
-                 alternate_agent_sock):
+    def __init__(self, listening_sock, *upstream_socks):
         # XXX BaseServer is an old style class, so we need to explicitly call
         # our parents initializer
-        SocketServer.ThreadingUnixStreamServer.__init__(
-            self, listening_sock, AgentMultiplexerRequestHandler)
+        socketserver.ThreadingUnixStreamServer.__init__(self, listening_sock, AgentMultiplexerRequestHandler)
 
-        self.default_agent = UpstreamSocketThread(default_agent_sock)
-        self.default_agent.start()
-        self.alternate_agent = UpstreamSocketThread(alternate_agent_sock)
-        self.alternate_agent.start()
+        self.__agents = []
+        for sock in upstream_socks:
+            new_agent = UpstreamSocketThread(sock)
+            new_agent.start()
+            self.__agents.append(new_agent)
+
+    @property
+    def default_agent(self):
+        return self.__agents[0]
 
     def agents(self):
-        yield self.default_agent
-        yield self.alternate_agent
+        for agent in self.__agents:
+            yield agent
 
 
-def start_agent_mux(ready_pipeout, parent_pid, upstream_socket,
-                    alternative_socket):
-    # generate unique socket path
-    sock_dir = tempfile.mkdtemp()
-    sock_path = sock_dir + '/ssh_auth.sock'
+def start_agent_mux(parent_pid, upstream_socks):
 
-    # pass all sockets to AgentMultiplexer
-    server = AgentMultiplexer(sock_path, upstream_socket, alternative_socket)
+    try:
+        # FIXME: "parent pid handling"
 
-    # Let parent know the socket is ready
-    ready_pipeout.send(sock_path)
-    ready_pipeout.close()
+        # generate unique socket path
 
-    while check_pid(parent_pid):
-        server.handle_request()
+        # pass all sockets to AgentMultiplexer
+        server = AgentMultiplexer(SOCK_PATH, *upstream_socks)
 
-    os.unlink(sock_path)
-    os.rmdir(sock_dir)
+        # Let parent know the socket is ready
+        # ready_pipeout.send(SOCK_PATH)
+        # ready_pipeout.close()
+
+        # FIXME
+        # while check_pid(parent_pid):
+        while True:
+            server.handle_request()
+
+    except Exception as e:
+        os.remove(SOCK_PATH)
+        print(str(e), file=sys.stderr)
 
 
 def check_pid(pid):
@@ -150,69 +142,58 @@ def check_pid(pid):
         return True
 
 
-def same_socket(sock1, sock2):
-    return os.path.realpath(sock1) == os.path.realpath(sock2)
+def main(args, extra_args):
+    # if extra_args and extra_args[0] == '--':
+    #     extra_args = extra_args[1:]
 
+    # level = logging.INFO
+    # if args.debug:
+    #     level = logging.DEBUG
+    # setup_logging("sshagentmux", level)
 
-def main():
-    # fetch alternate socket path from command line
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--debug', '-d', action='store_true',
-                        help="Enable debug logging")
-    parser.add_argument('--socket', required=True,
-                        help='alternative SSH agent socket')
+    # LOG.info("Starting sshagentmux")
 
-    args, extra_args = parser.parse_known_args()
+    # Save original parent pid so we can detect when it exits
+    parent_pid = os.getppid()
 
-    if extra_args and extra_args[0] == '--':
-        extra_args = extra_args[1:]
+    # if extra_args:
+    #     parent_pid = os.getpid()
 
-    level = logging.INFO
-    if args.debug:
-        level = logging.DEBUG
-    setup_logging("sshagentmux", level)
+    # Start proxy process and wait for it to creating auth socket
+    # Using a pipe for compatibility with OpenBSD
+    # ready_pipein, ready_pipeout = multiprocessing.Pipe()
 
-    LOG.info("Starting sshagentmux")
+    start_agent_mux(parent_pid, args.sockets)
 
-    # use specified socket if SSH_AUTH_SOCK is not present in environment
-    sock_path = args.socket
+    # daemonize(target=start_agent_mux,
+    #           stdout='/tmp/ssh_agent_mux_out.log',
+    #           stderr='/tmp/ssh_agent_mux_err.log',
+    #           args=(parent_pid, args.sockets))
 
-    if 'SSH_AUTH_SOCK' in os.environ and not same_socket(
-            os.environ['SSH_AUTH_SOCK'], args.socket):
-        upstream_socket = os.environ['SSH_AUTH_SOCK']
+    # Wait for server to setup listening socket
+    # sock_path = ready_pipein.recv()
+    # ready_pipein.close()
+    # ready_pipeout.close()
 
-        # Save original parent pid so we can detect when it exits
-        parent_pid = os.getppid()
-        if extra_args:
-            parent_pid = os.getpid()
-
-        # Start proxy process and wait for it to creating auth socket
-        # Using a pipe for compatibility with OpenBSD
-        ready_pipein, ready_pipeout = multiprocessing.Pipe()
-        daemonize(target=start_agent_mux,
-                  stderr=os.path.expanduser('~/.sshagentmux.log'),
-                  args=(ready_pipeout, parent_pid, upstream_socket,
-                        args.socket))
-
-        # Wait for server to setup listening socket
-        sock_path = ready_pipein.recv()
-        ready_pipein.close()
-        ready_pipeout.close()
-
-        if not os.path.exists(sock_path):
-            print >>sys.stderr, 'Agent Multiplexer failed to ' \
-                'create auth socket'
-            sys.exit(1)
-
-    # Behave like ssh-agent(1)
-    if extra_args:
-        # start command if specified in extra_args
-        os.environ['SSH_AUTH_SOCK'] = sock_path
-        os.execvp(extra_args[0], extra_args)
-    else:
-        # print how to setup environment (same behavior as ssh-agent)
-        print 'SSH_AUTH_SOCK={:s}; export SSH_AUTH_SOCK;'.format(sock_path)
+    # print(f'export SSH_AUTH_SOCK={SOCK_PATH}')
 
 
 if __name__ == '__main__':
-    main()
+    if os.path.exists(SOCK_PATH):
+        sys.exit(1)
+
+    # fetch alternate socket path from command line
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--daemonize', '-d', action='store_true',
+                        help='start server in background')
+    parser.add_argument('--pidfile', '-p', default=PID_FILE,
+                        help='pid file')
+    parser.add_argument('--sockets', '-s', required=True, nargs='+',
+                        help='list of upstream SSH agent sockets')
+
+    args, extra_args = parser.parse_known_args()
+
+    if args.daemonize:
+        Daemonize(app='sshagentmus', pid=args.pidfile, action=partial(main, args, extra_args)).start()
+    else:
+        main(args, extra_args)

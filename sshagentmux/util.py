@@ -28,7 +28,8 @@ def setup_logging(name, level=logging.DEBUG):
 
     log = logging.getLogger()
     log.setLevel(level)
-    handler = logging.handlers.SysLogHandler(address='/dev/log')
+    #handler = logging.handlers.SysLogHandler(address='/dev/log')
+    handler = logging.StreamHandler()
 
     FORMAT = name + "[%(process)d]:%(module)s %(levelname)s %(message)s"
     DATE_FORMAT = '%b %d %H:%M:%S'
@@ -52,7 +53,7 @@ def daemonize(target=None, pidfile=None, stdin='/dev/null', stdout='/dev/null',
         raise RuntimeError('fork #1 failed.')
 
     os.chdir('/')
-    os.umask(077)
+    os.umask(0o77)
     os.setsid()
 
     # Second fork (relinquish session leadership)
@@ -77,7 +78,7 @@ def daemonize(target=None, pidfile=None, stdin='/dev/null', stdout='/dev/null',
     if pidfile:
         # Write the PID file
         with open(pidfile, 'w') as f:
-            print >>f, os.getpid()
+            print(os.getpid(), file=f)
 
         # Arrange to have the PID file removed on exit/signal
         atexit.register(lambda: os.remove(pidfile))
